@@ -1,11 +1,54 @@
+# =============================================================================================
+# EXPERIMENT BRANCH `test/ib-runner-2204` -- DO NOT MERGE, HERE OR UPSTREAM.
+#
+# Why this exists: find out what actually breaks when nushell's Linux CI runs on
+# Incredibuild's hosted runner (label `incredibuild-runner`) instead of GitHub's
+# `ubuntu-22.04`, and separate "our runner is broken" from "this test is broken in nushell"
+# in a single run.
+#
+# How it discriminates: every Linux matrix entry appears TWICE -- once on
+# `incredibuild-runner` (name suffix "IB-runner") and once, otherwise identical, on
+# GitHub-hosted `ubuntu-22.04` (suffix "GH-hosted"). Fails on both => nushell's problem.
+# Fails only on the IB copy => ours. NEVER delete the GH-hosted control; without it a red
+# check proves nothing. Keep the two copies in lockstep.
+#
+# The workarounds from an earlier attempt are deliberately ABSENT:
+#   * no `--skip` for plugin_process_exits_when_nushell_exits /
+#     mkdir_continues_creating_directories_after_error / cd_permission_denied_folder /
+#     rm_prints_filenames_on_error, and no split of `cargo test` into lib/tests + benches,
+#   * no CARGO_BIN probe loop; the artifact path is upstream's `~/.cargo/bin/nu`.
+# Those workarounds hid exactly the failures this branch exists to observe. Do NOT
+# "helpfully" re-add them -- a green run here teaches us nothing. Fix the runner image.
+#
+# Two flags exist so that ONE run shows everything, and neither is a workaround:
+#   * `fail-fast: false` -- a red IB job must not cancel the control it is compared against;
+#   * `--no-fail-fast` on `cargo test` -- otherwise cargo stops at the first failing test
+#     BINARY and hides the rest. In that earlier attempt only 2 of 113 test binaries ran before the abort,
+#     which is why its first run showed one failure and its author needed four more commits
+#     to discover the other three.
+#
+# Also note: the `ubuntu-22.04` pin further down is intentional upstream (glibc floor of the
+# shipped binary), so an IB image built on a newer Ubuntu silently defeats it and that never
+# shows up as a red check. The "experiment diagnostics" steps below print the OS, the user
+# id and the produced binary's glibc floor so the invisible failure becomes visible too.
+# =============================================================================================
 on:
   pull_request:
   push:
     branches:
       - main
       - 'patch-release-*'
+      # EXPERIMENT: without this the branch filter above means a push to a topic branch
+      # triggers nothing at all, and the experiment silently never runs. Remove with the
+      # rest of the experiment.
+      - 'test/ib-runner-*'
   pull_request_target:
     types: [ready_for_review]
+  # EXPERIMENT: on-demand trigger for re-running the comparison. NOTE: GitHub only offers
+  # `workflow_dispatch` for workflows that exist on the repository's DEFAULT branch, so the
+  # "Run workflow" button appears only once this file has landed on the fork's `main`.
+  # Until then use the push trigger above.
+  workflow_dispatch:
 
 name: continuous-integration
 
@@ -48,6 +91,12 @@ concurrency:
 jobs:
   cargo:
     # Do not run CI on draft PRs or on the lower layers of stacked PRs
+    #
+    # EXPERIMENT: this guard is left EXACTLY as upstream on purpose -- it does not need
+    # relaxing. With no pull_request payload (`workflow_dispatch`, or a plain branch push)
+    # every `github.event.pull_request.*` lookup yields null, `!null` is true and
+    # `null == null` is true, so the guard passes. Upstream's own push-to-main runs prove it:
+    # they carry no pull_request payload and all jobs execute.
     if: >-
       !github.event.pull_request.draft &&
       (
@@ -57,13 +106,24 @@ jobs:
       )
     name: "`cargo` in ${{ matrix.workspace.name }} (${{ matrix.target.name }})"
     strategy:
-      fail-fast: true
+      # EXPERIMENT, and NOT a workaround: one run has to reveal every failure, so a red IB
+      # job must never cancel the GitHub-hosted control it is being compared against.
+      fail-fast: false
       matrix:
         target:
           # Pinning to Ubuntu 22.04 because building on newer Ubuntu versions causes linux-gnu
           # builds to link against a too-new-for-many-Linux-installs glibc version. Consider
           # revisiting this when 22.04 is closer to EOL (June 2027)
-          - name: Ubuntu
+          #
+          # EXPERIMENT: the pin above is the thing under test. The next two entries are the
+          # same job twice -- IB runner, then the GitHub-hosted control. Any edit to one must
+          # be mirrored onto the other or the comparison is worthless.
+          - name: Ubuntu IB-runner
+            host: incredibuild-runner
+            target: x86_64-unknown-linux-gnu
+            options: MAIN_OPTIONS
+            steps: [fmt, clippy, build, test, doctest]
+          - name: Ubuntu GH-hosted
             host: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             options: MAIN_OPTIONS
@@ -78,7 +138,13 @@ jobs:
             target: x86_64-apple-darwin
             options: MAIN_OPTIONS
             steps: [fmt, clippy, build, test, doctest]
-          - name: WASM
+          # EXPERIMENT: same pairing as the Ubuntu entries above -- IB runner, then control.
+          - name: WASM IB-runner
+            host: incredibuild-runner
+            target: wasm32-unknown-unknown
+            options: WASM_OPTIONS
+            steps: [build, check]
+          - name: WASM GH-hosted
             host: ubuntu-22.04
             target: wasm32-unknown-unknown
             options: WASM_OPTIONS
@@ -99,14 +165,48 @@ jobs:
             skip: [build, test, doctest]
 
         exclude:
-          - target: { name: WASM }
+          # EXPERIMENT: these excludes match on `target.name`, so both WASM entries must be
+          # listed by their new names. Miss one and the fuzz workspaces get paired with the
+          # WASM target, where `cargo check -p nu-...` fails on packages those workspaces do
+          # not contain -- a red check that has nothing to do with the runner.
+          - target: { name: "WASM IB-runner" }
             workspace: { name: nu-parser/fuzz }
-          - target: { name: WASM }
+          - target: { name: "WASM IB-runner" }
+            workspace: { name: nu-path/fuzz }
+          - target: { name: "WASM GH-hosted" }
+            workspace: { name: nu-parser/fuzz }
+          - target: { name: "WASM GH-hosted" }
             workspace: { name: nu-path/fuzz }
     
     runs-on: ${{ matrix.target.host }}
 
     steps:
+      # EXPERIMENT DIAGNOSTICS -- self-contained, delete this one step for a minimal diff.
+      # Deliberately the first step, so we still learn what the machine is even if checkout
+      # itself fails, and guarded so it can never fail the job. OS version, root-ness,
+      # container-ness and CARGO_HOME are precisely the variables that the workarounds in
+      # an earlier attempt was papering over, so record them on both sides of the pair.
+      - name: Runner environment (experiment diagnostics)
+        # Gated on the matrix host rather than `runner.os`, which is reported by the runner
+        # itself -- if the IB runner reported anything unexpected, the one step whose output
+        # this experiment depends on would silently skip.
+        if: matrix.target.host == 'incredibuild-runner' || matrix.target.host == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          set +e
+          echo "runner:    name=$RUNNER_NAME os=$RUNNER_OS arch=$RUNNER_ARCH image=${ImageOS:-<unset>} ${ImageVersion:-}"
+          echo "matrix:    host=${{ matrix.target.host }} target=${{ matrix.target.target }} workspace=${{ matrix.workspace.name }}"
+          grep -E '^(NAME|VERSION|VERSION_ID)=' /etc/os-release
+          uname -a
+          echo "glibc:     $(ldd --version 2>&1 | head -1)"
+          echo "user:      $(id)"
+          echo "container: dockerenv=$([ -e /.dockerenv ] && echo yes || echo no) pid1=$(ps -p 1 -o comm= 2>/dev/null)"
+          echo "env:       HOME=$HOME CARGO_HOME=${CARGO_HOME:-<unset>} RUSTUP_HOME=${RUSTUP_HOME:-<unset>}"
+          echo "toolchain: cargo=$(command -v cargo) rustup=$(command -v rustup)"
+          cargo --version; rustc --version; rustup show active-toolchain
+          ls -d /ib-workspace /ib-workspace/cache/cargo 2>/dev/null
+          exit 0
+
       - name: Checkout Repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -115,7 +215,7 @@ jobs:
         working-directory: ${{ matrix.workspace.path }}
 
       - name: Cache Rust
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ${{ matrix.workspace.path }} -> target
           cache-all-crates: true
@@ -148,7 +248,20 @@ jobs:
       - name: cargo test
         if: contains(matrix.target.steps, 'test') && !contains(matrix.workspace.skip, 'test')
         working-directory: ${{ matrix.workspace.path }}
-        run: cargo --config "${{ github.workspace }}/.cargo/ci.toml" test ${{ env[matrix.target.options] }} --profile ${{ matrix.workspace.profile }}
+        # EXPERIMENT: upstream's single plain invocation, on purpose. An earlier attempt
+        # split this into `--lib --tests` plus a separate `--benches` run so it could pass
+        # four `--skip` flags (`--skip` is rejected under `--all-targets`), which hid the
+        # very failures we are here to collect. Do NOT add `--skip` or re-split this command
+        # -- if a test fails only in the IB-runner column, that is the result, not a nuisance.
+        #
+        # `--no-fail-fast` is the ONE addition, and it hides nothing -- it can only reveal
+        # more. Without it `cargo test` stops at the first failing test BINARY, and
+        # `fail-fast: false` above does not help because that only governs sibling matrix
+        # jobs, not steps within one job. In that attempt exactly 2 of 113 test binaries ran before
+        # the abort, so its first run showed only plugin_process_exits_when_nushell_exits and
+        # masked the three permission failures; it took four more commits to peel them back
+        # one layer at a time. With this flag all four surface in a single run. Keep it.
+        run: cargo --config "${{ github.workspace }}/.cargo/ci.toml" test --no-fail-fast ${{ env[matrix.target.options] }} --profile ${{ matrix.workspace.profile }}
 
       - name: cargo test --doc
         if: contains(matrix.target.steps, 'doctest') && !contains(matrix.workspace.skip, 'doctest')
@@ -160,6 +273,7 @@ jobs:
 
   std-lib-and-python-virtualenv:
     # Do not run CI on draft PRs or on the lower layers of stacked PRs
+    # EXPERIMENT: unchanged, and it does not need changing -- see the note on the `cargo` job.
     if: >-
       !github.event.pull_request.draft &&
       (
@@ -168,9 +282,13 @@ jobs:
           github.event.pull_request.stack.size
       )
     strategy:
-      fail-fast: true
+      # EXPERIMENT, and NOT a workaround: see the note on the `cargo` job above.
+      fail-fast: false
       matrix:
-        platform: [ubuntu-22.04, macos-latest, windows-latest]
+        # EXPERIMENT: the IB runner plus its identical GitHub-hosted control. macOS and
+        # Windows are dropped -- they are slow and cannot say anything about a Linux runner.
+        # Restore `macos-latest, windows-latest` when the experiment is over.
+        platform: [incredibuild-runner, ubuntu-22.04]
         py:
           - py
 
@@ -180,12 +298,57 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        uses: actions-rust-lang/setup-rust-toolchain@9d7e65c320fdb52dcd45ffaa68deb6c02c8754d9 # v1.12.0
 
       - name: Install Nushell
+        # EXPERIMENT: byte-for-byte upstream, on purpose. An earlier attempt wrapped this in a CARGO_BIN
+        # probe loop and wrote $GITHUB_ENV/$GITHUB_PATH because IB's cargo wrapper installs
+        # under /ib-workspace/cache/cargo without exporting CARGO_HOME to later steps. That
+        # gap is ours to fix in the runner image, so it must stay visible here.
         run: cargo install --path . --locked --force
 
+      # EXPERIMENT DIAGNOSTICS -- self-contained, delete this one step for a minimal diff.
+      # Measures the two things no red check can tell us:
+      #   1. where `cargo install` actually put `nu`. Recorded only -- the upload below still
+      #      points at upstream's ~/.cargo/bin/nu so the breakage still shows up as red.
+      #   2. the glibc floor of the produced binary. That is WHY upstream pins ubuntu-22.04;
+      #      building on a newer Ubuntu raises it silently -- never a red check, just an
+      #      artifact that refuses to start on older distros. Compare this number between the
+      #      incredibuild-runner job and the ubuntu-22.04 control: if it is higher on IB, the
+      #      22.04 image variant is justified regardless of what the checks say.
+      - name: Locate nu and measure its glibc floor (experiment diagnostics)
+        shell: bash
+        run: |
+          set +e
+          echo "user:      $(id)"
+          echo "env:       HOME=$HOME CARGO_HOME=${CARGO_HOME:-<unset>}"
+          echo "nu on PATH: $(command -v nu)"
+          for p in "${CARGO_HOME:-$HOME/.cargo}/bin/nu" "$HOME/.cargo/bin/nu" /ib-workspace/cache/cargo/bin/nu; do
+            [ -e "$p" ] && ls -l "$p"
+          done
+          NU_BIN=$(command -v nu)
+          if [ -z "$NU_BIN" ]; then
+            echo "nu is not on PATH -- later steps that invoke it will fail"
+            exit 0
+          fi
+          file "$NU_BIN"
+          echo "glibc (host):     $(ldd --version 2>&1 | head -1)"
+          echo "glibc floor (nu): $(objdump -T "$NU_BIN" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -u -V | tail -1)"
+          echo -n "all GLIBC_ refs:  "
+          objdump -T "$NU_BIN" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -u -V | tr '\n' ' '
+          echo
+          exit 0
+
       - name: Upload Nushell build (Ubuntu and macOS)
+        # EXPERIMENT: path deliberately left as upstream's `~/.cargo/bin/nu`. An earlier attempt replaced
+        # it with a probe because that path is wrong on the IB runner (cargo installs to
+        # /ib-workspace/cache/cargo/bin). Be aware of how this actually surfaces: upload-
+        # artifact defaults to `if-no-files-found: warn`, so THIS step only logs
+        # "##[warning]No files were found with the provided path" and stays green -- the hard
+        # red arrives at "Standard library tests" below as `nu: command not found` (exit 127),
+        # because nu is not on PATH either. Both symptoms have the same single cause. If you
+        # would rather have the artifact gap fail here directly, add
+        # `if-no-files-found: error` -- but do not "fix" the path.
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: runner.os != 'Windows'
         with:
@@ -193,6 +356,9 @@ jobs:
           path: "~/.cargo/bin/nu"
           retention-days: 14
 
+      # EXPERIMENT: kept even though the `platform` matrix above no longer has a Windows
+      # entry, so this step's `if:` never fires. An earlier attempt deleted it; keeping it means this file
+      # still diffs cleanly against upstream when the experiment is torn down.
       - name: Upload Nushell build (Windows)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: runner.os == 'Windows'
