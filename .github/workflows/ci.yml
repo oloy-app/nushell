@@ -200,6 +200,7 @@ jobs:
           uname -a
           echo "glibc:     $(ldd --version 2>&1 | head -1)"
           echo "user:      $(id)"
+          echo "jobuser:   IB_RUN_JOB_AS_RUNNER=${IB_RUN_JOB_AS_RUNNER:-<unset>} IB_CONSOLE_SKIP=${IB_CONSOLE_SKIP:-<unset>}"
           echo "container: dockerenv=$([ -e /.dockerenv ] && echo yes || echo no) pid1=$(ps -p 1 -o comm= 2>/dev/null)"
           echo "env:       HOME=$HOME CARGO_HOME=${CARGO_HOME:-<unset>} RUSTUP_HOME=${RUSTUP_HOME:-<unset>}"
           echo "toolchain: cargo=$(command -v cargo) rustup=$(command -v rustup)"
