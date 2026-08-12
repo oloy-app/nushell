@@ -220,6 +220,16 @@ jobs:
           workspaces: ${{ matrix.workspace.path }} -> target
           cache-all-crates: true
           cache-workspace-crates: true
+          # EXPERIMENT: rust-cache keys on a Rust-toolchain hash but NOTHING about the OS
+          # or glibc, so it treats caches built on different Ubuntu releases as
+          # interchangeable. Measured 2026-08-12: after this tenant moved from the 24.04
+          # runner image to the 22.04 one, a restored `target/` build script compiled
+          # against GLIBC_2.39 was executed on a glibc-2.35 host and died with
+          # "version `GLIBC_2.39' not found" -- an inscrutable failure, not a cache miss.
+          # `key` adds material to the cache key; the matrix host distinguishes the
+          # IB runner from the GitHub-hosted control, and os-release pins the actual
+          # distro release so a variant switch can never reuse an incompatible cache.
+          key: ${{ matrix.target.host }}-${{ hashFiles('/etc/os-release') }}
 
       - name: cargo fmt
         if: contains(matrix.target.steps, 'fmt') && !contains(matrix.workspace.skip, 'fmt')
