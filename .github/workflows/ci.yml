@@ -296,10 +296,19 @@ jobs:
       # EXPERIMENT, and NOT a workaround: see the note on the `cargo` job above.
       fail-fast: false
       matrix:
-        # EXPERIMENT: the IB runner plus its identical GitHub-hosted control. macOS and
-        # Windows are dropped -- they are slow and cannot say anything about a Linux runner.
-        # Restore `macos-latest, windows-latest` when the experiment is over.
-        platform: [incredibuild-runner, ubuntu-22.04]
+        # EXPERIMENT: each Incredibuild runner paired with its identical GitHub-hosted
+        # control, so any gap classifies itself. macOS stays dropped -- it says nothing
+        # about either runner. Restore `macos-latest` when the experiment is over.
+        #
+        # The Windows control is pinned to `windows-2022`, NOT `windows-latest`: GitHub's
+        # `windows-latest` is windows-2025, and our image is windows-2022, so pairing
+        # against `-latest` would compare two different operating systems and make every
+        # difference uninterpretable.
+        platform:
+          - incredibuild-runner
+          - ubuntu-22.04
+          - incredibuild-windows-2022
+          - windows-2022
         py:
           - py
 
