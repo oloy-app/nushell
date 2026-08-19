@@ -85,7 +85,22 @@ env:
     -p nuon
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  # EXPERIMENT: the `test/ib-runner-*` push trigger above means a push to the topic branch
+  # while its PR is open matches BOTH `push` and `pull_request`, i.e. two runs of this
+  # workflow per push. Upstream's key did not collapse them: `head_ref` is set only for the
+  # pull_request run, so the push run fell through to `github.run_id` -- unique per run, so
+  # the pair landed in different groups and neither cancelled the other. Keying the topic
+  # branch on its BRANCH NAME makes the key identical for both triggers, so the twin runs
+  # share a group and `cancel-in-progress` keeps only the later one (the pull_request run,
+  # created a few seconds after the push run).
+  #
+  # `github.ref` alone would NOT fix this: it is `refs/heads/<branch>` for push but
+  # `refs/pull/<n>/merge` for pull_request, so the two runs would still differ.
+  #
+  # Upstream branches keep upstream behaviour exactly: `main` and `patch-release-*` pushes
+  # still fall through to `github.run_id`, so they are never cancelled by a later push.
+  # Revert to the upstream one-liner with the rest of the experiment.
+  group: ${{ github.workflow }}-${{ github.head_ref || (startsWith(github.ref_name, 'test/ib-runner-') && github.ref_name || github.run_id) }}
   cancel-in-progress: true
 
 jobs:
