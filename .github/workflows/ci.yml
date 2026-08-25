@@ -341,18 +341,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # ACCEPTANCE TEST (row 3), reverted by the very next commit. Deliberately red,
-      # and deliberately AFTER checkout: the point is to fail on a runner that has
-      # already booted, registered and done real work, so we can observe whether the
-      # one-shot VM still releases itself when the job's conclusion is `failure`
-      # rather than `success`. Teardown is unconditional on exit code by
-      # construction (the terminate block carries no `if`), but that has never once
-      # been watched on a red job -- and a CI product fails builds routinely, so a
-      # success-only teardown would leak a VM per red build against a tenant-global
-      # 8-VM Windows cap. Delete this step with the revert.
-      - name: Deliberate failure (VM-teardown acceptance test)
-        run: exit 1
-
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@9d7e65c320fdb52dcd45ffaa68deb6c02c8754d9 # v1.12.0
 
