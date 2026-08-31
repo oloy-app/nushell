@@ -2,12 +2,12 @@
 # EXPERIMENT BRANCH `test/ib-runner-2204` -- DO NOT MERGE, HERE OR UPSTREAM.
 #
 # Why this exists: find out what actually breaks when nushell's Linux CI runs on
-# Incredibuild's hosted runner (label `incredibuild-runner`) instead of GitHub's
+# Incredibuild's hosted runner (label `incredibuild-ubuntu-latest`) instead of GitHub's
 # `ubuntu-22.04`, and separate "our runner is broken" from "this test is broken in nushell"
 # in a single run.
 #
 # How it discriminates: every Linux matrix entry appears TWICE -- once on
-# `incredibuild-runner` (name suffix "IB-runner") and once, otherwise identical, on
+# `incredibuild-ubuntu-latest` (name suffix "IB-runner") and once, otherwise identical, on
 # GitHub-hosted `ubuntu-22.04` (suffix "GH-hosted"). Fails on both => nushell's problem.
 # Fails only on the IB copy => ours. NEVER delete the GH-hosted control; without it a red
 # check proves nothing. Keep the two copies in lockstep.
@@ -134,7 +134,7 @@ jobs:
           # same job twice -- IB runner, then the GitHub-hosted control. Any edit to one must
           # be mirrored onto the other or the comparison is worthless.
           - name: Ubuntu IB-runner
-            host: incredibuild-runner
+            host: incredibuild-ubuntu-latest
             target: x86_64-unknown-linux-gnu
             options: MAIN_OPTIONS
             steps: [fmt, clippy, build, test, doctest]
@@ -164,7 +164,7 @@ jobs:
             steps: [fmt, clippy, build, test, doctest]
           # EXPERIMENT: same pairing as the Ubuntu entries above -- IB runner, then control.
           - name: WASM IB-runner
-            host: incredibuild-runner
+            host: incredibuild-ubuntu-latest
             target: wasm32-unknown-unknown
             options: WASM_OPTIONS
             steps: [build, check]
@@ -214,7 +214,7 @@ jobs:
         # Gated on the matrix host rather than `runner.os`, which is reported by the runner
         # itself -- if the IB runner reported anything unexpected, the one step whose output
         # this experiment depends on would silently skip.
-        if: matrix.target.host == 'incredibuild-runner' || matrix.target.host == 'ubuntu-22.04'
+        if: matrix.target.host == 'incredibuild-ubuntu-latest' || matrix.target.host == 'ubuntu-22.04'
         shell: bash
         run: |
           set +e
@@ -329,7 +329,8 @@ jobs:
         # against `-latest` would compare two different operating systems and make every
         # difference uninterpretable.
         platform:
-          - incredibuild-runner
+          - incredibuild-ubuntu-latest
+          - incredibuild-ubuntu-2204
           - ubuntu-22.04
           - incredibuild-windows-2022
           - windows-2022
@@ -358,7 +359,7 @@ jobs:
       #   2. the glibc floor of the produced binary. That is WHY upstream pins ubuntu-22.04;
       #      building on a newer Ubuntu raises it silently -- never a red check, just an
       #      artifact that refuses to start on older distros. Compare this number between the
-      #      incredibuild-runner job and the ubuntu-22.04 control: if it is higher on IB, the
+      #      incredibuild-ubuntu-latest job and the ubuntu-22.04 control: if it is higher on IB, the
       #      22.04 image variant is justified regardless of what the checks say.
       - name: Locate nu and measure its glibc floor (experiment diagnostics)
         shell: bash
